@@ -40,6 +40,8 @@
     "glslify": "^7.0.0",
     "jimp": "^0.6.1",
     "opentype.js": "^0.11.0",
-    "png-stream": "^1.0.5"
+    "png-stream": "^1.0.5",
+    "sharp": "^0.22.1",
+    "tmp": "^0.1.0"
   }
 }

@@ -1,69 +1,83 @@
-var Jimp = require('jimp');
+var opentype = require('opentype.js')
+var sharp = require('sharp');
+var { createCanvas } = require('canvas');
+var tmp = require('tmp');
 
-var range = ( from, to ) => {
-    var res = [];
-    for ( var i = from; i <= to; i++ ) res.push( i );
-    return res;
+var font = opentype.loadSync('./MonumentGroteskTrial-Medium.otf');
+
+var BLUR = 30;
+var Y = 30;
+
+var getSize = glyph => {
+    var { x1, x2, y1, y2 } = glyph.getBoundingBox();
+    return [ Math.ceil( x2 - x1 ), Math.ceil( y2 - y1 ) ];
 }
 
-var THRESHOLD = 128;
-
-var sub = ( p0, p1 ) => [
-    p0[ 0 ] - p1[ 0 ],
-    p0[ 1 ] - p1[ 1 ]
-];
-var distSq = ( p0, p1 ) => {
-    var [ dx, dy ] = sub( p0, p1 );
-    return dx * dx + dy * dy;
+var drawMask = ( glyph, color = 'white' ) => {
+    var [ w, h ] = getSize( glyph );
+    var canvas = createCanvas( w, h );
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = color;
+    var { x1, y1, x2, y2 } = glyph.getBoundingBox();
+    var path = glyph.getPath( -x1, y1 + h, font.unitsPerEm );
+    path.fill = color;
+    path.draw( ctx );
+    var pixels = ctx.getImageData( 0, 0, w, h );
+    return sharp( Buffer.from( pixels.data ), { raw: { width: pixels.width, height: pixels.height, channels: 4 } })
 }
-var dist = ( p0, p1 ) => Math.sqrt( distSq( p0, p1 ) );
-var angle = ( p0, p1 ) => {
-    var [ x, y ] = sub( p0, p1 );
-    return Math.atan2( y, x );
-}
-var angleToInt = angle => ( angle + Math.PI ) / ( Math.PI * 2 ) * 255;
 
-var convert = async ( inFile, outFile ) => {
-    var img = await Jimp.read( inFile );
-    var out = img.clone();
-    var value = p => img.bitmap.data[ img.getPixelIndex( p[ 0 ], p[ 1 ] ) ]
-    var pxAtRadius = ( p, r ) => {
-        if ( r === 0 ) return [ p ];
-        return [
-            ...range( p[ 0 ] - r, p[ 0 ] + r ).reduce( ( res, x ) => [
-                ...res,
-                [ x, p[ 1 ] - r ],
-                [ x, p[ 1 ] + r ],
-            ], [] ),
-            ...range( ( p[ 1 ] - r ) + 1, ( p[ 1 ] + r ) - 1 ).reduce( ( res, y ) => [
-                ...res,
-                [ p[ 0 ] - r, y ],
-                [ p[ 0 ] + r, y ]
-            ], [] )
-        ].filter( ([ x, y ]) => (
-            x >= 0 &&
-            y >= 0 && 
-            x < img.bitmap.width &&
-            y < img.bitmap.height
-        ))
+var saveTmp = async img => {
+    var file = tmp.tmpNameSync({ postfix: '.png' });
+    await img.toFile( file );
+    return file;
+}
+
+var reload = async img => sharp( await saveTmp( img ) );
+
+( async () => {
+    for ( var glyph of Object.values( font.glyphs.glyphs ) ) {
+        var size = getSize( glyph );
+        if ( !glyph.unicode || size[ 0 ] === 0 || size[ 1 ] === 0 ) continue;
+        console.log( glyph.name );
+        var mask = drawMask( glyph, 'white' );
+        console.log('\tmask done')
+        var extend = BLUR * 2;
+        var blurSize = [ size[ 0 ] + extend * 2, size[ 1 ] + extend * 2 ];
+        var blur = await reload(
+            mask
+                .clone()
+                .extend({
+                    top: extend, left: extend, right: extend, bottom: extend,
+                    background: { r: 0, g: 0, b: 0, alpha: 0 }
+                })
+                .blur( BLUR )
+        )
+        var blurUp = blur.clone().extract({
+            left: extend,
+            top: extend + Y,
+            width: size[ 0 ],
+            height: size[ 1 ]
+        })
+        var blurDown = blur.clone().extract({
+            left: extend,
+            top: extend - Y,
+            width: size[ 0 ],
+            height: size[ 1 ]
+        })
+        var highlight = drawMask( glyph, 'white' )
+            .composite([{
+                input: await saveTmp( blurUp ),
+                blend: 'dest-out'
+            }])
+        var shadow = drawMask( glyph, 'rgba( 0, 0, 0, .3 )' )
+            .composite([{
+                input: await saveTmp( blurDown ),
+                blend: 'dest-out'
+            }])
+        var out = ( await reload( shadow ) )
+            .composite([{
+                input: await saveTmp( highlight )
+            }])
+        await out.toFile(`./out/${ glyph.unicode }.png`);
     }
-    var find = ( p, d = 0 ) => {
-        var coords = pxAtRadius( p, d );
-        if ( !coords.length ) return { distance: 0, angle: 0 };
-        var found = coords.filter( p => value( p ) < THRESHOLD );
-        if ( !found.length ) return find( p, d + 1 );
-        var closest = found.reduce( ( min, px ) => {
-            return distSq( min, p ) < distSq( px, p ) ? min : px;
-        });
-        return { distance: dist( p, closest ), angle: angle( p, closest ) };
-    }
-    img.scan( 0, 0, img.bitmap.width, img.bitmap.height, ( x, y, idx ) => {
-        var { distance, angle } = find([ x, y ]);
-        console.log( x, y );
-        out.setPixelColor( Jimp.rgbaToInt( distance, angleToInt( angle ), 0, 255 ), x, y );
-    });
-    out.write( outFile );
-}
-
-var [ , , inFile, outFile ] = process.argv;
-convert( inFile, outFile );
+})()
