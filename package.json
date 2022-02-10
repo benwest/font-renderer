@@ -20,7 +20,7 @@
     "babelify": "^8.0.0",
     "browserify": "^16.1.0",
     "live-server": "^1.2.0",
-    "node-sass": "^4.7.2",
+    "node-sass": "^7.0.0",
     "onchange": "^3.3.0",
     "uglify-es": "^3.3.9",
     "watchify": "^3.10.0"
